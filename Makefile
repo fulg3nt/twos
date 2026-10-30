@@ -34,7 +34,7 @@ image: build/bin/twos_kernel
 	@cp -f loader/twos_loader.efi image/root/EFI/Boot/bootx64.efi
 	@cd image && ./make_image.sh
 
-QEMUARGS = -m 196M -machine type=q35,accel=kvm -device usb-ehci \
+QEMUARGS = -m 196M -machine type=q35,accel=kvm -device qemu-xhci \
 		   -device usb-tablet,id=ut -device VGA,vgamem_mb=8 \
 		   -drive file=build/bin/boot.img,format=raw,if=virtio,readonly=on \
 		   -bios /usr/share/ovmf/x64/OVMF.4m.fd -monitor stdio

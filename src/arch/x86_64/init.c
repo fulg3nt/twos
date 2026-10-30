@@ -29,7 +29,7 @@ void arch_init(struct bootinfo *bi)
 {
     union pme *pml4;
     asm volatile("mov %%cr3, %0" : "=r"(pml4));
-    pml4[0].raw = 0;
+    //pml4[0].raw = 0;
     vm_set_cr3(pml4);
 
     g_bi = bi;

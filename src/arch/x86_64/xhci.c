@@ -310,7 +310,7 @@ void xhci_irq(struct intr_frame *fr)
                 u8 port_id = (ctrl->evt_ring_deq->param >> 24) & 0xff;
                 volatile struct xhci_port *prt = &ctrl->op->ports[port_id - 1];
                 if (prt->portsc & (1 << 17)) {
-                    print("PSC Event [%zx]: Port ID: %hhu, Status: %s, PORTSC: %08x\n", ctrl->rt->irs[0].erdp, port_id,
+                    print("Port Status Change Event <%zx>: Port ID = %hhu, Status = %s, PORTSC = %08x\n", ctrl->rt->irs[0].erdp, port_id,
                           prt->portsc & 1 ? "Connect" : "Disconnect", prt->portsc);
                     ctrl->csc_pending = true;
                     g_last_csc_time = time_get_up_ns();
@@ -318,7 +318,7 @@ void xhci_irq(struct intr_frame *fr)
                 break;
 
             case TRB_CMD_COMPLETION_EVENT:
-                print("Command Completion Event [%zx] Cmd TRB: %zx, Status: %08x\n", ctrl->rt->irs[0].erdp,
+                print("Command Completion Event <%zx>: Cmd TRB Addr = %zx, Status = %08x\n", ctrl->rt->irs[0].erdp,
                       ctrl->evt_ring_deq->param, ctrl->evt_ring_deq->status);
                 ctrl->last_cc_evt = *ctrl->evt_ring_deq;
                 break;
@@ -330,7 +330,7 @@ void xhci_irq(struct intr_frame *fr)
                 break;
 
             default:
-                print("unhandled event TRB [%zx]: %016zx %08x %08x\n", ctrl->rt->irs[0].erdp, ctrl->evt_ring_deq->param,
+                print("unhandled event TRB <%zx>: %016zx %08x %08x\n", ctrl->rt->irs[0].erdp, ctrl->evt_ring_deq->param,
                       ctrl->evt_ring_deq->status, ctrl->evt_ring_deq->control);
                 break;
             }
@@ -389,16 +389,28 @@ void xhci_init_dev(union pci_addr pa, struct pci_common_header *hdr)
     uptr ext_cap = mmio_base + (dev->cap->hccparams1 >> 16) * 4;
 
     while (1) {
-        u32 *caps = ext_cap;
+        volatile u32 *caps = ext_cap;
         if ((caps[0] & 0xff) == 2) {
             u8 maj = caps[0] >> 24, min = (caps[0] >> 16) & 0xff, psic = caps[2] >> 28;
             u32 name = caps[1];
-            print("%.4s%hhx.%hhx ports %hhu-%hhu, psic: %hhu\n", &name, maj, min, caps[2] & 0xff,
+            print("%.4s%hhx.%hhx: Ports %hhu-%hhu, Protocol Speed ID Count = %hhu\n", &name, maj, min, caps[2] & 0xff,
                   (caps[2] & 0xff) + ((caps[2] >> 8) & 0xff) - 1, psic);
             for (u8 i = 0; i < psic; i++) {
                 u32 psi = caps[4 + i];
-                print("psiv: %hhu, speed: %hu * 10 ^ %hhu bit/s, lp: %hhu\n", psi & 0b1111, psi >> 16,
-                      (psi >> 4) & 0b11, (psi >> 14) & 0b11);
+                const char *units[] = {"bit/s", "Kbit/s", "Mbit/s", "Gbit/s", "Unknown unit"};
+                print("PSIV = %hhu, Speed = %hu %s, LP = %hhu\n", psi & 0b1111, psi >> 16,
+                      units[((psi >> 4) & 0b11) < 4 ? ((psi >> 4) & 0b11) : 4], (psi >> 14) & 0b11);
+            }
+        } else if ((caps[0] & 0xff) == 1) {
+            print("USBLEGSUP capability found (BIOS owned = %s), requesting ownership of HC...",
+                  (caps[0] & (1 << 16)) ? "true" : "false");
+            *((volatile u8 *)caps + 3) |= 1;
+            if (WAIT(!(caps[0] & (1 << 16)) && (caps[0] & (1 << 24)))) {
+                printk(" failed (%08x)\n", caps[0]);
+            } else {
+                printk(" done (%08x)\n", caps[0]);
+                u32 smi_mask = ~((1 << 0) | (1 << 4) | (1 << 13) | (1 << 14) | (1 << 15));
+                caps[1] &= smi_mask;
             }
         }
 
@@ -422,11 +434,11 @@ void xhci_init_dev(union pci_addr pa, struct pci_common_header *hdr)
 
     dev->op->config |= dev->max_slots;
     dev->dcba_arr = xhci_alloc_page(&dev->op->dcbaap);
-    print("allocated device context base address array: %016zx\n", dev->op->dcbaap);
+    //print("allocated device context base address array: %016zx\n", dev->op->dcbaap);
 
     xhci_ring_init(&dev->cmd_ring);
     dev->op->crcr = PHYS(dev->cmd_ring.base) | 1;
-    print("allocated command ring: %016zx\n", PHYS(dev->cmd_ring.base));
+    //print("allocated command ring: %016zx\n", PHYS(dev->cmd_ring.base));
 
     u32 msb = (dev->cap->hcsparams2 >> 27) | (((dev->cap->hcsparams2 >> 21) & 0x1f) << 5);
     if (msb) {
@@ -443,16 +455,19 @@ void xhci_init_dev(union pci_addr pa, struct pci_common_header *hdr)
     }
 
     dev->rt = mmio_base + dev->cap->rtsoff;
-    print("runtime registers at %016zx\n", PHYS(dev->rt));
+    //print("runtime registers at %016zx\n", PHYS(dev->rt));
 
     dev->dbs = mmio_base + dev->cap->dboff;
-    print("doorbells at %016zx\n", PHYS(dev->dbs));
+    //print("doorbells at %016zx\n", PHYS(dev->dbs));
 
     if (msix_offset) {
+        print("interrupts using MSI-X\n");
+
+        irq_set_handler(16, xhci_irq);
         pci_writel(pa, msix_offset, pci_readl(pa, msix_offset) | (1 << 31));
         u32 toff = pci_readl(pa, msix_offset + 4);
         uptr table_addr = pci_read_memory_bar(pa, toff & 0b111, NULL) + (toff & ~0b111);
-        print("MSI-X table at %016zx\n", table_addr);
+        // print("MSI-X table at %016zx\n", table_addr);
 
         volatile struct pci_msix_ent *tbl = vm_map_mmio(PALIGN_DOWN(table_addr), 1) | (table_addr & 0xfff);
         tbl[0].msg_addr = 0xFEE00000;
@@ -460,12 +475,16 @@ void xhci_init_dev(union pci_addr pa, struct pci_common_header *hdr)
         tbl[0].vec_ctrl = 1;
 
         dev->msix = tbl;
+    } else {
+        u8 pic_irq = pci_readl(pa, 0x3c) & 0xff;
+        print("interrupts using PIC, line = %hhu\n", pic_irq);
+        irq_set_handler(pic_irq, xhci_irq);
     }
 
     dev->erst = VIRT(pm_alloc_zero_frame());
     dev->erst[0].rsba = pm_alloc_zero_frame();
     dev->erst[0].rssz = 256;
-    print("allocated event ring segment table: %016zx\n", PHYS(dev->erst));
+    //print("allocated event ring segment table: %016zx\n", PHYS(dev->erst));
 
     dev->rt->irs[0].iman = (1 << 1);
     dev->rt->irs[0].imod = 4000;
@@ -474,7 +493,7 @@ void xhci_init_dev(union pci_addr pa, struct pci_common_header *hdr)
     dev->rt->irs[0].erstba = PHYS(dev->erst);
 
     dev->evt_ring_deq = vm_map_mmio(dev->erst[0].rsba, 1);
-    print("ERST[0] ring segment base: %016zx\n", dev->erst[0].rsba);
+    //print("ERST[0] ring segment base: %016zx\n", dev->erst[0].rsba);
     dev->evt_ring_ccs = 1;
 
     list_add(&dev->lh, &g_ctrls);

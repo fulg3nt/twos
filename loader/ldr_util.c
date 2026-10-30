@@ -22,7 +22,7 @@ VOID LdrSetupGraphics(struct efi_gop_info *bi_fb)
         LdrExit();
     }
 
-    /*UINT32 NoModes = GOP->Mode->MaxMode, NativeMode = GOP->Mode->Mode;
+    UINT32 NoModes = GOP->Mode->MaxMode, NativeMode = GOP->Mode->Mode;
 
     Print(u"Available video modes:\r\n");
 
@@ -51,7 +51,7 @@ enter:
             Print(u"\r\nUnable to set mode: %r\r\n", Status);
             goto enter;
         }
-    }*/
+    }
 
     bi_fb->base = GOP->Mode->FrameBufferBase;
     bi_fb->size = GOP->Mode->FrameBufferSize;
